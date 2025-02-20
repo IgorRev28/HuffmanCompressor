@@ -14,19 +14,10 @@ typedef struct node {
     struct node *left, *right, *next;
 } NODE;
 
-typedef union bit2char {
-    char symb;
-    struct bit {
-        unsigned b1 : 1;
-        unsigned b2 : 1;
-        unsigned b3 : 1;
-        unsigned b4 : 1;
-        unsigned b5 : 1;
-        unsigned b6 : 1;
-        unsigned b7 : 1;
-        unsigned b8 : 1;
-    } mbit;
-} BIT2CHAR;
+typedef struct {
+    unsigned int code;
+    unsigned char length;
+} HuffmanCode;
 
 NODE *Add2List(NODE **head, NODE *newNode) {
     if (!*head || newNode->freq < (*head)->freq) {
@@ -63,85 +54,99 @@ NODE *MakeTreeFromList(NODE *head) {
     return head;
 }
 
-void GenerateHuffmanCodes(NODE *root, unsigned char *code, int depth, char huffmanTable[256][CODE_SIZE]) {
+void GenerateHuffmanCodes(NODE* root, unsigned int code, unsigned char length, HuffmanCode huffmanTable[256]) {
     if (!root) return;
     if (root->isSymb) {
-        code[depth] = '\0';
-        strcpy(huffmanTable[root->symb], (char *)code);
+        huffmanTable[root->symb].code = code;
+        huffmanTable[root->symb].length = length;
         return;
     }
-    code[depth] = '0';
-    GenerateHuffmanCodes(root->left, code, depth + 1, huffmanTable);
-    code[depth] = '1';
-    GenerateHuffmanCodes(root->right, code, depth + 1, huffmanTable);
+    GenerateHuffmanCodes(root->left, code << 1, length + 1, huffmanTable);
+    GenerateHuffmanCodes(root->right, (code << 1) | 1, length + 1, huffmanTable);
 }
 
-void CompressFile(const char *inputFile, const char *outputFile) {
-    unsigned int freq[256] = {0};
-    FILE *fr = fopen(inputFile, "rb");
-    if (!fr) return;
+void FreeTree(NODE* root) {
+    if (!root) return;
+    FreeTree(root->left);
+    FreeTree(root->right);
+    free(root);
+}
+void CompressFile(const char* inputFile, const char* outputFile) {
+    unsigned int freq[256] = { 0 };
+    FILE* fr = fopen(inputFile, "rb");
+    if (!fr) {
+        printf("Error opening input file: %s\n", inputFile);
+        return;
+    }
 
     fseek(fr, 0L, SEEK_END);
     long length = ftell(fr);
     fseek(fr, 0, SEEK_SET);
-    
-    for (int i = 0; i < length; ++i) {
+
+    for (long i = 0; i < length; ++i) {
         freq[(unsigned char)fgetc(fr)]++;
     }
     fclose(fr);
     
-    NODE *head = NULL;
+    NODE* head = NULL;
     for (int i = 0; i < 256; i++) {
         if (freq[i] > 0) {
-            NODE *newNode = (NODE *)malloc(sizeof(NODE));
+            NODE* newNode = (NODE*)calloc(1, sizeof(NODE));
             newNode->symb = (unsigned char)i;
             newNode->isSymb = 1;
             newNode->freq = freq[i];
-            newNode->left = newNode->right = newNode->next = NULL;
-            head = Add2List(&head, newNode);
+            head = Add2List(head, newNode);
         }
     }
     
-    NODE *root = MakeTreeFromList(head);
+    NODE* root = MakeTreeFromList(head);
+    if (!root) {
+        printf("oshibka\n");
+        return;
+    }
+
     
-    char huffmanTable[256][CODE_SIZE] = {0};
-    unsigned char code[CODE_SIZE] = {0};
-    GenerateHuffmanCodes(root, code, 0, huffmanTable);
-    
+    HuffmanCode huffmanTable[256] = { 0 };
+    GenerateHuffmanCodes(root, 0, 0, huffmanTable);
+
     fr = fopen(inputFile, "rb");
-    FILE *fw = fopen(outputFile, "wb");
-    if (!fw) return;
-    
-    BIT2CHAR symb;
-    char bitString[length * CODE_SIZE];
-    bitString[0] = '\0';
-    
-    for (int i = 0; i < length; ++i) {
-        strcat(bitString, huffmanTable[(unsigned char)fgetc(fr)]);
+    FILE* fw = fopen(outputFile, "wb");
+    if (!fw) {
+        printf("Error opening output file: %s\n", outputFile);
+        fclose(fr);
+        return;
     }
+    unsigned char bitAccumulator = 0;
+    int bitCount = 0;
+
+    for (long i = 0; i < length; ++i) {
+        unsigned char c = (unsigned char)fgetc(fr);
+        unsigned int code = huffmanTable[c].code;
+        unsigned char length = huffmanTable[c].length;
+
+        for (int j = length - 1; j >= 0; j--) {
+            bitAccumulator = (bitAccumulator << 1) | ((code >> j) & 1);
+            bitCount++;
+
+            if (bitCount == BIT8) {
+                fputc(bitAccumulator, fw);
+                bitAccumulator = 0;
+                bitCount = 0;
+            }
+        }
+    }
+
+    if (bitCount > 0) {
+        bitAccumulator <<= (BIT8 - bitCount);
+        fputc(bitAccumulator, fw);
+    }
+
     fclose(fr);
-    
-    int bitLen = strlen(bitString);
-    int byteCount = bitLen / BIT8;
-    int tail = bitLen % BIT8;
-    fwrite(&tail, sizeof(int), 1, fw);
-    fwrite(&byteCount, sizeof(int), 1, fw);
-    
-    for (int i = 0; i < byteCount; ++i) {
-        symb.mbit.b1 = bitString[i * BIT8 + 0] - '0';
-        symb.mbit.b2 = bitString[i * BIT8 + 1] - '0';
-        symb.mbit.b3 = bitString[i * BIT8 + 2] - '0';
-        symb.mbit.b4 = bitString[i * BIT8 + 3] - '0';
-        symb.mbit.b5 = bitString[i * BIT8 + 4] - '0';
-        symb.mbit.b6 = bitString[i * BIT8 + 5] - '0';
-        symb.mbit.b7 = bitString[i * BIT8 + 6] - '0';
-        symb.mbit.b8 = bitString[i * BIT8 + 7] - '0';
-        fwrite(&symb.symb, sizeof(char), 1, fw);
-    }
     fclose(fw);
+    FreeTree(root);
 }
 
-int main(int argc, char *argv[]) {
+int main(int argc, char* argv[]) {
     if (argc != 3) {
         printf("Usage: %s <input_file> <output_file>\n", argv[0]);
         return 1;
